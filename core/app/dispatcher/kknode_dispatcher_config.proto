@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package kknode.core.app.dispatcher;
+option csharp_namespace = "kknode.core.app.dispatcher";
+option go_package = "github.com/kcproxy/kknode/core/app/dispatcher";
+option java_package = "com.kknode.core.app.dispatcher";
+option java_multiple_files = true;
+
+message SessionConfig {
+  reserved 1;
+}
+
+message Config {
+  SessionConfig settings = 1;
+}

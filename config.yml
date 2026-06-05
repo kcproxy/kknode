@@ -1,0 +1,16 @@
+﻿Log:
+  Level: warn
+  Output:
+  Access: none
+
+Nodes:
+  - ApiHost: https://api.example.com
+    ServerID: 1
+    SecretKey: ********-****-****-****-************
+    Timeout: 30
+    LocalConfig: false
+  - ApiHost: https://api.example2.com
+    ServerID: 2
+    SecretKey: ********-****-****-****-************
+    Timeout: 30
+    LocalConfig: false
