@@ -6,7 +6,6 @@ output/*
 .idea/*
 new.sh
 *.exe
-node
 bin/
 dist/
 .trae/

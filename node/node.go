@@ -1,0 +1,76 @@
+package node
+
+import (
+	"fmt"
+
+	"github.com/kcproxy/kknode/api/panel"
+	"github.com/kcproxy/kknode/conf"
+	vCore "github.com/kcproxy/kknode/core"
+)
+
+type Node struct {
+	controllers []*Controller
+}
+
+func New(core *vCore.XrayCore, apiConfig *conf.ServerApiConfig, serverconfig *panel.ServerConfigResponse, apiDir string) (*Node, error) {
+	node := &Node{
+		controllers: make([]*Controller, len(*serverconfig.Data.Protocols)),
+	}
+	pushinterval := serverconfig.Data.PushInterval
+	if pushinterval <= 0 {
+		pushinterval = 60
+	}
+	pullinterval := serverconfig.Data.PullInterval
+	if pullinterval <= 0 {
+		pullinterval = 60
+	}
+	for i, nodeconfig := range *serverconfig.Data.Protocols {
+		n := &panel.NodeInfo{
+			Id:                     apiConfig.ServerId,
+			Type:                   nodeconfig.Type,
+			TrafficReportThreshold: serverconfig.Data.TrafficReportThreshold,
+			PushInterval:           pushinterval,
+			PullInterval:           pullinterval,
+			Protocol:               &nodeconfig,
+		}
+		p, err := panel.NewClientV1(&conf.NodeApiConfig{
+			APIHost:   apiConfig.ApiHost,
+			NodeType:  nodeconfig.Type,
+			NodeID:    apiConfig.ServerId,
+			SecretKey: apiConfig.SecretKey,
+		})
+		if err != nil {
+			return nil, err
+		}
+		node.controllers[i] = NewController(core, p, n, apiDir)
+	}
+
+	return node, nil
+}
+
+func (n *Node) Start() error {
+	for i := range n.controllers {
+		if !n.controllers[i].info.Protocol.Enable {
+			continue
+		}
+		err := n.controllers[i].Start()
+		if err != nil {
+			return fmt.Errorf("启动节点 [%s-%s-%d] 失败: %s",
+				n.controllers[i].apiClient.APIHost,
+				n.controllers[i].info.Type,
+				n.controllers[i].info.Id,
+				err)
+		}
+	}
+	return nil
+}
+
+func (n *Node) Close() {
+	for _, c := range n.controllers {
+		err := c.Close()
+		if err != nil {
+			panic(err)
+		}
+	}
+	n.controllers = nil
+}
