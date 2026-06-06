@@ -68,17 +68,11 @@ func (v *XrayCore) Start(serverconfig *panel.ServerConfigResponse, apiDir string
 	defer v.access.Unlock()
 
 	if !localOnly {
-		// save node.json (previously panel.json) with cert_dns_env stripped out;
-		// the sensitive DNS credentials are persisted separately to a 0600 sidecar
-		// (cert_env.json) and merged back when node.json is reloaded.
-		redacted, secrets := panel.RedactCertDNSEnv(serverconfig)
-		if len(secrets) > 0 {
-			if envJSON, err := json.MarshalIndent(secrets, "", "  "); err == nil {
-				_ = os.WriteFile(filepath.Join(apiDir, panel.CertEnvFileName), envJSON, 0600)
-			}
-		} else {
-			_ = os.Remove(filepath.Join(apiDir, panel.CertEnvFileName))
-		}
+		// save node.json (previously panel.json) with cert_dns_env stripped out.
+		// 敏感的 DNS 证书凭证(cert_dns_env)不再落盘；本地锁定模式下需要时
+		// 从面板按需拉取并合并(见 cmd/server.go)。这里同时清理历史遗留的 sidecar。
+		redacted, _ := panel.RedactCertDNSEnv(serverconfig)
+		_ = os.Remove(filepath.Join(apiDir, panel.CertEnvFileName))
 		if panelJSON, err := json.MarshalIndent(redacted, "", "  "); err == nil {
 			_ = os.WriteFile(filepath.Join(apiDir, "node.json"), panelJSON, 0644)
 		}

@@ -104,6 +104,20 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+// splitCSVLines 按逗号/换行拆分为去空白、非空的字符串切片。
+func splitCSVLines(s string) []string {
+	fields := strings.FieldsFunc(s, func(r rune) bool {
+		return r == ',' || r == '\n' || r == '\r'
+	})
+	out := make([]string, 0, len(fields))
+	for _, f := range fields {
+		if f = strings.TrimSpace(f); f != "" {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
 func rawJSONMessage(value string, field string) (*json.RawMessage, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -185,7 +199,45 @@ func buildOutboundSettings(item panel.Outbound) (string, *json.RawMessage, error
 		settings["address"] = strings.TrimSpace(item.Address)
 		settings["port"] = item.Port
 	case "wireguard":
-		return "", nil, nil
+		// WireGuard 出站。若提供了 raw settings(函数开头已处理)则用其；
+		// 否则用通用字段构造，字段映射如下(沿用通用 outbound 字段)：
+		//   secretKey         ← Password                  本端 WireGuard 私钥
+		//   peer.publicKey    ← RealityPublicKey / UUID    对端(上游)公钥
+		//   peer.endpoint     ← Address:Port               对端地址
+		//   address(本端隧道IP)← Host(逗号/换行分隔)         默认 10.0.0.2/32
+		//   peer.allowedIPs   ← Path(逗号/换行分隔)          默认 0.0.0.0/0, ::/0
+		//   peer.preSharedKey ← User(可选)
+		//   peer.keepAlive    ← Heartbeat(可选,秒)
+		secretKey := strings.TrimSpace(item.Password)
+		peerPublicKey := firstNonEmpty(item.RealityPublicKey, item.UUID)
+		endpointHost := strings.TrimSpace(item.Address)
+		if secretKey == "" || peerPublicKey == "" || endpointHost == "" || item.Port == 0 {
+			// 关键字段缺失,无法构造有效的 WireGuard 出站,跳过
+			return "", nil, nil
+		}
+		localAddrs := splitCSVLines(item.Host)
+		if len(localAddrs) == 0 {
+			localAddrs = []string{"10.0.0.2/32"}
+		}
+		allowedIPs := splitCSVLines(item.Path)
+		if len(allowedIPs) == 0 {
+			allowedIPs = []string{"0.0.0.0/0", "::/0"}
+		}
+		peer := map[string]interface{}{
+			"publicKey":  peerPublicKey,
+			"endpoint":   fmt.Sprintf("%s:%d", endpointHost, item.Port),
+			"allowedIPs": allowedIPs,
+		}
+		if psk := strings.TrimSpace(item.User); psk != "" {
+			peer["preSharedKey"] = psk
+		}
+		if item.Heartbeat > 0 {
+			peer["keepAlive"] = item.Heartbeat
+		}
+		settings["secretKey"] = secretKey
+		settings["address"] = localAddrs
+		settings["peers"] = []map[string]interface{}{peer}
+		settings["mtu"] = 1420
 	default:
 		return "", nil, nil
 	}
@@ -199,6 +251,11 @@ func buildOutboundSettings(item panel.Outbound) (string, *json.RawMessage, error
 }
 
 func buildOutboundStreamConfig(item panel.Outbound) (*coreConf.StreamConfig, error) {
+	// WireGuard 自带传输层,不使用 xray streamSettings；
+	// 否则其复用的 Host/Path 字段会被误判为 WS 等传输。
+	if normalizeOutboundProtocol(item.Protocol) == "wireguard" {
+		return nil, nil
+	}
 	if raw := strings.TrimSpace(item.StreamSettings); raw != "" {
 		var stream coreConf.StreamConfig
 		if err := json.Unmarshal([]byte(raw), &stream); err != nil {

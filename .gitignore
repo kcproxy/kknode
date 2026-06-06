@@ -9,3 +9,4 @@ new.sh
 bin/
 dist/
 .trae/
+.claude/

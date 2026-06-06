@@ -184,14 +184,13 @@ func startBackends(c *conf.Conf, reloadCh chan struct{}) []*Backend {
 				log.Errorf("本地 node.json 格式错误或缺少协议信息 (%s)", apiDir)
 				continue
 			}
-			// node.json 已脱敏,从 0600 sidecar 恢复 cert_dns_env 供 DNS 证书签发/续期使用
-			if envData, err := os.ReadFile(filepath.Join(apiDir, panel.CertEnvFileName)); err == nil {
-				secrets := make(map[string]string)
-				if err := json.Unmarshal(envData, &secrets); err == nil {
-					panel.MergeCertDNSEnv(serverconfig, secrets)
-				} else {
-					log.Errorf("解析本地 %s 失败 (%s): %s", panel.CertEnvFileName, apiDir, err)
-				}
+			// node.json 已脱敏；cert_dns_env 不再落盘读取，改为从面板按需拉取后合并，
+			// 供 DNS 证书签发/续期使用。面板不可达时仅影响证书签发/续期，节点其余配置仍走本地。
+			if remote, rerr := panel.GetServerConfig(context.Background(), p); rerr == nil {
+				_, secrets := panel.RedactCertDNSEnv(remote)
+				panel.MergeCertDNSEnv(serverconfig, secrets)
+			} else {
+				log.WithField("err", rerr).Warnf("从面板拉取 cert_dns_env 失败,DNS 证书签发/续期可能不可用: %s", apiConf.ApiHost)
 			}
 		}
 
