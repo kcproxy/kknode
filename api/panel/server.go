@@ -164,3 +164,49 @@ func GetServerConfig(ctx context.Context, c *ClientV2) (*ServerConfigResponse, e
 	}
 	return resp, nil
 }
+
+// CertEnvFileName is the private sidecar file that stores the cert_dns_env
+// credentials stripped out of node.json.
+const CertEnvFileName = "cert_env.json"
+
+// RedactCertDNSEnv returns a copy of cfg with every Protocol.CertDNSEnv cleared,
+// together with a map of protocol type -> cert_dns_env holding the removed
+// values. The original cfg is left untouched so in-memory certificate issuance
+// still has access to the credentials.
+func RedactCertDNSEnv(cfg *ServerConfigResponse) (*ServerConfigResponse, map[string]string) {
+	secrets := make(map[string]string)
+	if cfg == nil || cfg.Data == nil || cfg.Data.Protocols == nil {
+		return cfg, secrets
+	}
+
+	cp := *cfg
+	dataCopy := *cfg.Data
+	protocols := make([]Protocol, len(*cfg.Data.Protocols))
+	for i, p := range *cfg.Data.Protocols {
+		if p.CertDNSEnv != "" {
+			secrets[p.Type] = p.CertDNSEnv
+		}
+		p.CertDNSEnv = ""
+		protocols[i] = p
+	}
+	dataCopy.Protocols = &protocols
+	cp.Data = &dataCopy
+	return &cp, secrets
+}
+
+// MergeCertDNSEnv restores Protocol.CertDNSEnv from secrets (type -> value) for
+// any protocol whose value is currently empty. Used when reloading a redacted
+// node.json together with its cert_env.json sidecar.
+func MergeCertDNSEnv(cfg *ServerConfigResponse, secrets map[string]string) {
+	if cfg == nil || cfg.Data == nil || cfg.Data.Protocols == nil || len(secrets) == 0 {
+		return
+	}
+	protocols := *cfg.Data.Protocols
+	for i := range protocols {
+		if protocols[i].CertDNSEnv == "" {
+			if v, ok := secrets[protocols[i].Type]; ok {
+				protocols[i].CertDNSEnv = v
+			}
+		}
+	}
+}

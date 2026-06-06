@@ -68,8 +68,18 @@ func (v *XrayCore) Start(serverconfig *panel.ServerConfigResponse, apiDir string
 	defer v.access.Unlock()
 
 	if !localOnly {
-		// save node.json (previously panel.json)
-		if panelJSON, err := json.MarshalIndent(serverconfig, "", "  "); err == nil {
+		// save node.json (previously panel.json) with cert_dns_env stripped out;
+		// the sensitive DNS credentials are persisted separately to a 0600 sidecar
+		// (cert_env.json) and merged back when node.json is reloaded.
+		redacted, secrets := panel.RedactCertDNSEnv(serverconfig)
+		if len(secrets) > 0 {
+			if envJSON, err := json.MarshalIndent(secrets, "", "  "); err == nil {
+				_ = os.WriteFile(filepath.Join(apiDir, panel.CertEnvFileName), envJSON, 0600)
+			}
+		} else {
+			_ = os.Remove(filepath.Join(apiDir, panel.CertEnvFileName))
+		}
+		if panelJSON, err := json.MarshalIndent(redacted, "", "  "); err == nil {
 			_ = os.WriteFile(filepath.Join(apiDir, "node.json"), panelJSON, 0644)
 		}
 
