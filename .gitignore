@@ -10,3 +10,4 @@ bin/
 dist/
 .trae/
 .claude/
+.gitignore
