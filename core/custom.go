@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/kcproxy/kknode/api/panel"
+	log "github.com/sirupsen/logrus"
 	"github.com/xtls/xray-core/app/dns"
 	"github.com/xtls/xray-core/app/router"
 	xnet "github.com/xtls/xray-core/common/net"
@@ -81,6 +82,75 @@ func buildRouteDomains(rules []string) []string {
 		domains = append(domains, value)
 	}
 	return domains
+}
+
+// looksLikeIPOrCIDR 判断字符串是否为 IP 或 CIDR。
+func looksLikeIPOrCIDR(s string) bool {
+	if _, _, err := net.ParseCIDR(s); err == nil {
+		return true
+	}
+	return net.ParseIP(s) != nil
+}
+
+// buildOutboundRouteRules 把出站规则(每行一条)转成 xray 路由规则，全部指向 tag。
+// 支持三类写法：
+//   - all / * / any            → 全量：该出站接管所有 TCP/UDP 流量（其它规则忽略）
+//   - ip:CIDR / 裸 IP 或 CIDR   → 按目标 IP 路由
+//   - 其它(域名)                → keyword:/suffix:/regex:/裸域名，按域名路由
+func buildOutboundRouteRules(rules []string, tag string) []json.RawMessage {
+	var domains, ips []string
+	catchAll := false
+	for _, raw := range rules {
+		r := strings.TrimSpace(raw)
+		if r == "" {
+			continue
+		}
+		switch strings.ToLower(r) {
+		case "all", "*", "any":
+			catchAll = true
+			continue
+		}
+		if strings.HasPrefix(strings.ToLower(r), "ip:") {
+			if v := strings.TrimSpace(r[3:]); v != "" {
+				ips = append(ips, v)
+			}
+			continue
+		}
+		if looksLikeIPOrCIDR(r) {
+			ips = append(ips, r)
+			continue
+		}
+		domains = append(domains, r)
+	}
+
+	var out []json.RawMessage
+	if catchAll {
+		// 全量接管，忽略其它细则
+		if rule, err := json.Marshal(map[string]interface{}{
+			"network":     "tcp,udp",
+			"outboundTag": tag,
+		}); err == nil {
+			out = append(out, rule)
+		}
+		return out
+	}
+	if d := buildRouteDomains(domains); len(d) > 0 {
+		if rule, err := json.Marshal(map[string]interface{}{
+			"domain":      d,
+			"outboundTag": tag,
+		}); err == nil {
+			out = append(out, rule)
+		}
+	}
+	if len(ips) > 0 {
+		if rule, err := json.Marshal(map[string]interface{}{
+			"ip":          ips,
+			"outboundTag": tag,
+		}); err == nil {
+			out = append(out, rule)
+		}
+	}
+	return out
 }
 
 func normalizeOutboundProtocol(protocol string) string {
@@ -473,6 +543,11 @@ func GetCustomConfig(serverconfig *panel.ServerConfigResponse) (*dns.Config, []*
 				return nil, nil, nil, err
 			}
 			if protocol == "" || rawSettings == nil {
+				// 关键字段缺失或协议不支持 → 跳过；记录日志便于排查
+				log.WithFields(log.Fields{
+					"name":     outbounditem.Name,
+					"protocol": outbounditem.Protocol,
+				}).Warn("[Outbound] 跳过：协议不支持或关键字段缺失，未生成出站")
 				continue
 			}
 			streamSettings, err := buildOutboundStreamConfig(outbounditem)
@@ -485,21 +560,27 @@ func GetCustomConfig(serverconfig *panel.ServerConfigResponse) (*dns.Config, []*
 				Settings:      rawSettings,
 				StreamSetting: streamSettings,
 			}
-			// Outbound rules
-			domains := buildRouteDomains(outbounditem.Rules)
 			custom_outbound, err := outbound.Build()
 			if err != nil {
+				// 构建失败（如密钥格式错误）→ 跳过；记录具体错误便于排查
+				log.WithFields(log.Fields{
+					"name":     outbounditem.Name,
+					"protocol": outbounditem.Protocol,
+					"err":      err.Error(),
+				}).Error("[Outbound] 构建失败，未生成出站")
 				continue
 			}
-			if len(domains) > 0 {
-				rule := map[string]interface{}{
-					"domain":      domains,
-					"outboundTag": custom_outbound.Tag,
-				}
-				rawRule, err := json.Marshal(rule)
-				if err == nil {
-					coreRouterConfig.RuleList = append(coreRouterConfig.RuleList, rawRule)
-				}
+			// Outbound rules：支持 all/* 全量、ip:/CIDR 按 IP、域名
+			routeRules := buildOutboundRouteRules(outbounditem.Rules, custom_outbound.Tag)
+			if len(routeRules) > 0 {
+				coreRouterConfig.RuleList = append(coreRouterConfig.RuleList, routeRules...)
+			} else {
+				// 没有路由规则 → 不会有任何流量经过该出站，xray 也不会拨号
+				// （WireGuard 等按需建立隧道，表现为"没有连接动作"）
+				log.WithFields(log.Fields{
+					"name":     outbounditem.Name,
+					"protocol": outbounditem.Protocol,
+				}).Warn("[Outbound] 已生成但未配置路由规则(Rules)，不会有流量经过此出站。如需全量走此出站,规则填 all")
 			}
 			if hasOutboundWithTag(coreOutboundConfig, custom_outbound.Tag) {
 				continue
