@@ -308,6 +308,10 @@ func buildOutboundSettings(item panel.Outbound) (string, *json.RawMessage, error
 		settings["address"] = localAddrs
 		settings["peers"] = []map[string]interface{}{peer}
 		settings["mtu"] = 1420
+		// 默认使用用户态 gVisor TUN(noKernelTun=true)。容器 / 未加载 wireguard 内核模块的环境下，
+		// 内核 TUN 会创建 wg0 接口并失败("Operation not supported")导致连不上；用户态在任何环境都可用，
+		// 中转出站性能差异可忽略。仅当显式开启"使用内核 TUN"(复用 ReduceRTT 字段)时才用内核 TUN(裸金属性能更好)。
+		settings["noKernelTun"] = !item.ReduceRTT
 	default:
 		return "", nil, nil
 	}

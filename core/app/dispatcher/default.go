@@ -4,6 +4,7 @@ package dispatcher
 
 import (
 	"context"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -506,6 +507,15 @@ func sniffer(ctx context.Context, cReader *cachedReader, metadataOnly bool, netw
 }
 
 func (d *DefaultDispatcher) routedDispatch(ctx context.Context, link *transport.Link, destination net.Destination, l *limiter.Limiter, protocol string) {
+	// 兜底:出站 handler 内部 panic(例如上游 WireGuard netBind 重复 close channel 的 bug)
+	// 不应让整个进程崩溃、连累同节点其他协议。这里 recover 后优雅关闭本次连接的 link。
+	defer func() {
+		if r := recover(); r != nil {
+			errors.LogError(ctx, "dispatcher: recovered from panic dispatching to [", destination, "]: ", r, "\n", string(debug.Stack()))
+			common.Close(link.Writer)
+			common.Interrupt(link.Reader)
+		}
+	}()
 	outbounds := session.OutboundsFromContext(ctx)
 	ob := outbounds[len(outbounds)-1]
 
